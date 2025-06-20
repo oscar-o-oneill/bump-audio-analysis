@@ -42,7 +42,7 @@ def detect_onsets(audio: np.ndarray, sr: int, hop_length: int = 512) -> np.ndarr
     return onset_times
 
 
-def detect_amplitude_peaks(audio: np.ndarray, sr: int, threshold_factor: float = 3.0) -> np.ndarray:
+def detect_amplitude_peaks(audio: np.ndarray, sr: int, threshold_factor: float = 20.0) -> np.ndarray:
     """Detect peaks based on amplitude thresholding."""
     # Calculate RMS energy in windows
     window_size = int(0.1 * sr)  # 100ms windows
@@ -61,7 +61,7 @@ def detect_amplitude_peaks(audio: np.ndarray, sr: int, threshold_factor: float =
     times = np.array(times)
     
     # Calculate threshold based on background noise
-    background_level = np.percentile(rms_values, 75)  # 75th percentile as baseline
+    background_level = np.percentile(rms_values, 70)  # 70th percentile as baseline
     threshold = background_level * threshold_factor
     
     # Find peaks above threshold
@@ -76,17 +76,24 @@ def detect_amplitude_peaks(audio: np.ndarray, sr: int, threshold_factor: float =
 
 
 def combine_detections(onset_times: np.ndarray, peak_times: np.ndarray, 
-                      tolerance: float = 0.5) -> np.ndarray:
+                      tolerance: float = 0.5, use_onset: bool = True, use_peaks: bool = True) -> np.ndarray:
     """Combine onset detection and amplitude peak detection results."""
     all_times = []
     
-    # Add all onset times
-    all_times.extend(onset_times)
+    # Add onset times if enabled
+    if use_onset:
+        all_times.extend(onset_times)
     
-    # Add peak times that don't have nearby onsets
-    for peak_time in peak_times:
-        if not any(abs(peak_time - onset_time) < tolerance for onset_time in onset_times):
-            all_times.append(peak_time)
+    # Add peak times if enabled
+    if use_peaks:
+        if use_onset:
+            # Add peak times that don't have nearby onsets
+            for peak_time in peak_times:
+                if not any(abs(peak_time - onset_time) < tolerance for onset_time in onset_times):
+                    all_times.append(peak_time)
+        else:
+            # Add all peak times if onset detection is disabled
+            all_times.extend(peak_times)
     
     return np.sort(all_times)
 
@@ -99,7 +106,7 @@ def format_timestamp(seconds: float) -> str:
     return f"{hours:02d}:{minutes:02d}:{secs:06.3f}"
 
 
-def analyze_audio(file_path: str, threshold_factor: float = 3.0) -> dict:
+def analyze_audio(file_path: str, threshold_factor: float = 3.0, use_onset: bool = True, use_peaks: bool = True) -> dict:
     """Main analysis function."""
     print(f"Loading audio file: {file_path}")
     audio, sr = load_audio(file_path)
@@ -107,14 +114,20 @@ def analyze_audio(file_path: str, threshold_factor: float = 3.0) -> dict:
     duration = len(audio) / sr
     print(f"Audio duration: {format_timestamp(duration)}")
     
-    print("Detecting onsets...")
-    onset_times = detect_onsets(audio, sr)
+    onset_times = np.array([])
+    if use_onset:
+        print("Detecting onsets...")
+        onset_times = detect_onsets(audio, sr)
     
-    print("Detecting amplitude peaks...")
-    peak_times, threshold, background = detect_amplitude_peaks(audio, sr, threshold_factor)
+    peak_times = np.array([])
+    threshold = 0.0
+    background = 0.0
+    if use_peaks:
+        print("Detecting amplitude peaks...")
+        peak_times, threshold, background = detect_amplitude_peaks(audio, sr, threshold_factor)
     
     print("Combining detections...")
-    combined_times = combine_detections(onset_times, peak_times)
+    combined_times = combine_detections(onset_times, peak_times, use_onset=use_onset, use_peaks=use_peaks)
     
     # Create results
     results = {
@@ -145,6 +158,10 @@ def main():
     parser.add_argument('--output', '-o', help='Output JSON file (optional)')
     parser.add_argument('--quiet', '-q', action='store_true',
                        help='Suppress detailed output')
+    parser.add_argument('--no-onset', action='store_true',
+                       help='Disable onset detection (use only amplitude peaks)')
+    parser.add_argument('--no-peaks', action='store_true',
+                       help='Disable amplitude peak detection (use only onsets)')
     
     args = parser.parse_args()
     
@@ -153,7 +170,14 @@ def main():
         return 1
     
     try:
-        results = analyze_audio(args.audio_file, args.threshold)
+        use_onset = not args.no_onset
+        use_peaks = not args.no_peaks
+        
+        if not use_onset and not use_peaks:
+            print("Error: Cannot disable both onset and peak detection")
+            return 1
+        
+        results = analyze_audio(args.audio_file, args.threshold, use_onset, use_peaks)
         
         if not args.quiet:
             print(f"\nAnalysis Results:")
